@@ -310,6 +310,24 @@ inline size_t NZDiff(ComponentType compType, void *data, void *dataBase, size_t 
     return 0;
 }
 
+#ifdef ASSIMP_DOUBLE_PRECISION
+// glTF spec mandates float32 for vertex attributes. When built with double
+// precision, mesh attributes (aiVector3D, aiColor4D) and animation sampler
+// data (std::vector<ai_real>) contain 8-byte doubles that must be narrowed
+// to 4-byte floats before writing to the glTF binary buffer.
+//
+// Only call for data known to be ai_real-based. Data already in float format
+// (mat4, vec4, joint/weight data) must NOT be converted.
+static std::vector<float> ConvertAiRealToFloat(const void *data, size_t totalComponents) {
+    std::vector<float> result(totalComponents);
+    const ai_real *src = reinterpret_cast<const ai_real *>(data);
+    for (size_t i = 0; i < totalComponents; ++i) {
+        result[i] = static_cast<float>(src[i]);
+    }
+    return result;
+}
+#endif
+
 inline Ref<Accessor> ExportDataSparse(Asset &a, std::string &meshName, Ref<Buffer> &buffer,
         size_t count, void *data, AttribType::Value typeIn, AttribType::Value typeOut, ComponentType compType, BufferViewTarget target = BufferViewTarget_NONE, void *dataBase = nullptr) {
     if (!count || !data) {
@@ -1217,8 +1235,14 @@ void glTF2Exporter::ExportMeshes() {
         p.ngonEncoded = (aim->mPrimitiveTypes & aiPrimitiveType_NGONEncodingFlag) != 0;
 
         /******************* Vertices ********************/
+#ifdef ASSIMP_DOUBLE_PRECISION
+        auto floatVerts = ConvertAiRealToFloat(aim->mVertices, aim->mNumVertices * 3);
+        Ref<Accessor> v = ExportData(*mAsset, meshId, b, aim->mNumVertices, floatVerts.data(), AttribType::VEC3,
+                AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#else
         Ref<Accessor> v = ExportData(*mAsset, meshId, b, aim->mNumVertices, aim->mVertices, AttribType::VEC3,
                 AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#endif
         if (v) {
             p.attributes.position.push_back(v);
         }
@@ -1231,8 +1255,15 @@ void glTF2Exporter::ExportMeshes() {
             }
         }
 
+#ifdef ASSIMP_DOUBLE_PRECISION
+        auto floatNormals = aim->mNormals ? ConvertAiRealToFloat(aim->mNormals, aim->mNumVertices * 3) : std::vector<float>();
+        Ref<Accessor> n = ExportData(*mAsset, meshId, b, aim->mNumVertices,
+                aim->mNormals ? floatNormals.data() : nullptr, AttribType::VEC3,
+                AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#else
         Ref<Accessor> n = ExportData(*mAsset, meshId, b, aim->mNumVertices, aim->mNormals, AttribType::VEC3,
                 AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#endif
         if (n) {
             p.attributes.normal.push_back(n);
         }
@@ -1242,10 +1273,18 @@ void glTF2Exporter::ExportMeshes() {
             for (uint32_t i = 0; i < aim->mNumVertices; ++i) {
                 aim->mTangents[i].NormalizeSafe();
             }
+#ifdef ASSIMP_DOUBLE_PRECISION
+            auto floatTangents = ConvertAiRealToFloat(aim->mTangents, aim->mNumVertices * 3);
+            Ref<Accessor> t = ExportData(
+                *mAsset, meshId, b, aim->mNumVertices, floatTangents.data(), AttribType::VEC3,
+                AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER
+            );
+#else
             Ref<Accessor> t = ExportData(
                 *mAsset, meshId, b, aim->mNumVertices, aim->mTangents, AttribType::VEC3,
                 AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER
             );
+#endif
             if (t) {
                 p.attributes.tangent.push_back(t);
             }
@@ -1267,8 +1306,14 @@ void glTF2Exporter::ExportMeshes() {
             if (aim->mNumUVComponents[i] > 0) {
                 AttribType::Value type = (aim->mNumUVComponents[i] == 2) ? AttribType::VEC2 : AttribType::VEC3;
 
+#ifdef ASSIMP_DOUBLE_PRECISION
+                auto floatTC = ConvertAiRealToFloat(aim->mTextureCoords[i], aim->mNumVertices * 3);
+                Ref<Accessor> tc = ExportData(*mAsset, meshId, b, aim->mNumVertices, floatTC.data(),
+                        AttribType::VEC3, type, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#else
                 Ref<Accessor> tc = ExportData(*mAsset, meshId, b, aim->mNumVertices, aim->mTextureCoords[i],
                         AttribType::VEC3, type, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#endif
                 if (tc) {
                     p.attributes.texcoord.push_back(tc);
                 }
@@ -1277,8 +1322,14 @@ void glTF2Exporter::ExportMeshes() {
 
         /*************** Vertex colors ****************/
         for (unsigned int indexColorChannel = 0; indexColorChannel < aim->GetNumColorChannels(); ++indexColorChannel) {
+#ifdef ASSIMP_DOUBLE_PRECISION
+            auto floatColors = ConvertAiRealToFloat(aim->mColors[indexColorChannel], aim->mNumVertices * 4);
+            Ref<Accessor> c = ExportData(*mAsset, meshId, b, aim->mNumVertices, floatColors.data(),
+                    AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#else
             Ref<Accessor> c = ExportData(*mAsset, meshId, b, aim->mNumVertices, aim->mColors[indexColorChannel],
                     AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
+#endif
             if (c) {
                 p.attributes.color.push_back(c);
             }
@@ -1351,14 +1402,20 @@ void glTF2Exporter::ExportMeshes() {
                     for (unsigned int vt = 0; vt < pAnimMesh->mNumVertices; ++vt) {
                         pPositionDiff[vt] = pAnimMesh->mVertices[vt] - aim->mVertices[vt];
                     }
+#ifdef ASSIMP_DOUBLE_PRECISION
+                    auto floatPosDiff = ConvertAiRealToFloat(pPositionDiff, pAnimMesh->mNumVertices * 3);
+                    void *posDiffData = floatPosDiff.data();
+#else
+                    void *posDiffData = pPositionDiff;
+#endif
                     Ref<Accessor> vec;
                     if (bUseSparse) {
                         vec = ExportDataSparse(*mAsset, meshId, b,
-                                pAnimMesh->mNumVertices, pPositionDiff,
+                                pAnimMesh->mNumVertices, posDiffData,
                                 AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
                     } else {
                         vec = ExportData(*mAsset, meshId, b,
-                                pAnimMesh->mNumVertices, pPositionDiff,
+                                pAnimMesh->mNumVertices, posDiffData,
                                 AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
                     }
                     if (vec) {
@@ -1373,14 +1430,20 @@ void glTF2Exporter::ExportMeshes() {
                     for (unsigned int vt = 0; vt < pAnimMesh->mNumVertices; ++vt) {
                         pNormalDiff[vt] = pAnimMesh->mNormals[vt] - aim->mNormals[vt];
                     }
+#ifdef ASSIMP_DOUBLE_PRECISION
+                    auto floatNormDiff = ConvertAiRealToFloat(pNormalDiff, pAnimMesh->mNumVertices * 3);
+                    void *normDiffData = floatNormDiff.data();
+#else
+                    void *normDiffData = pNormalDiff;
+#endif
                     Ref<Accessor> vec;
                     if (bUseSparse) {
                         vec = ExportDataSparse(*mAsset, meshId, b,
-                                pAnimMesh->mNumVertices, pNormalDiff,
+                                pAnimMesh->mNumVertices, normDiffData,
                                 AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
                     } else {
                         vec = ExportData(*mAsset, meshId, b,
-                                pAnimMesh->mNumVertices, pNormalDiff,
+                                pAnimMesh->mNumVertices, normDiffData,
                                 AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
                     }
                     if (vec) {
@@ -1608,7 +1671,12 @@ void glTF2Exporter::ExportMetadata() {
 }
 
 inline Ref<Accessor> GetSamplerInputRef(Asset &asset, std::string &animId, Ref<Buffer> &buffer, std::vector<ai_real> &times) {
+#ifdef ASSIMP_DOUBLE_PRECISION
+    auto floatTimes = ConvertAiRealToFloat(times.data(), times.size());
+    return ExportData(asset, animId, buffer, (unsigned int)times.size(), floatTimes.data(), AttribType::SCALAR, AttribType::SCALAR, ComponentType_FLOAT);
+#else
     return ExportData(asset, animId, buffer, (unsigned int)times.size(), &times[0], AttribType::SCALAR, AttribType::SCALAR, ComponentType_FLOAT);
+#endif
 }
 
 inline void ExtractTranslationSampler(Asset &asset, std::string &animId, Ref<Buffer> &buffer, const aiNodeAnim *nodeChannel, float ticksPerSecond, Animation::Sampler &sampler) {
@@ -1626,7 +1694,12 @@ inline void ExtractTranslationSampler(Asset &asset, std::string &animId, Ref<Buf
     }
 
     sampler.input = GetSamplerInputRef(asset, animId, buffer, times);
+#ifdef ASSIMP_DOUBLE_PRECISION
+    auto floatValues = ConvertAiRealToFloat(values.data(), values.size());
+    sampler.output = ExportData(asset, animId, buffer, numKeyframes, floatValues.data(), AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
+#else
     sampler.output = ExportData(asset, animId, buffer, numKeyframes, &values[0], AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
+#endif
     sampler.interpolation = Interpolation_LINEAR;
 }
 
@@ -1645,7 +1718,12 @@ inline void ExtractScaleSampler(Asset &asset, std::string &animId, Ref<Buffer> &
     }
 
     sampler.input = GetSamplerInputRef(asset, animId, buffer, times);
+#ifdef ASSIMP_DOUBLE_PRECISION
+    auto floatValues = ConvertAiRealToFloat(values.data(), values.size());
+    sampler.output = ExportData(asset, animId, buffer, numKeyframes, floatValues.data(), AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
+#else
     sampler.output = ExportData(asset, animId, buffer, numKeyframes, &values[0], AttribType::VEC3, AttribType::VEC3, ComponentType_FLOAT);
+#endif
     sampler.interpolation = Interpolation_LINEAR;
 }
 
@@ -1665,7 +1743,12 @@ inline void ExtractRotationSampler(Asset &asset, std::string &animId, Ref<Buffer
     }
 
     sampler.input = GetSamplerInputRef(asset, animId, buffer, times);
+#ifdef ASSIMP_DOUBLE_PRECISION
+    auto floatValues = ConvertAiRealToFloat(values.data(), values.size());
+    sampler.output = ExportData(asset, animId, buffer, numKeyframes, floatValues.data(), AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT);
+#else
     sampler.output = ExportData(asset, animId, buffer, numKeyframes, &values[0], AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT);
+#endif
     sampler.interpolation = Interpolation_LINEAR;
 }
 
