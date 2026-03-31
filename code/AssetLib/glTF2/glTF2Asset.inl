@@ -1045,7 +1045,23 @@ size_t Accessor::ExtractData(T *&outData, const std::vector<unsigned int> *remap
             if (srcIdx >= maxIndexCount) {
                 throw DeadlyImportError("GLTF: index*stride ", (srcIdx * stride), " > maxSize ", maxSize, " in ", getContextForErrorMessages(id, name));
             }
+#ifdef ASSIMP_DOUBLE_PRECISION
+            // With double precision, ai_real is 8 bytes but glTF vertex data is float32
+            // (4 bytes per component). Convert each float to ai_real individually so
+            // values are preserved rather than copying raw bytes into double fields.
+            if (elemSize == GetNumComponents() * sizeof(float) && targetElemSize == GetNumComponents() * sizeof(ai_real)) {
+                const size_t numComponents = GetNumComponents();
+                const float *src = reinterpret_cast<const float *>(data + srcIdx * stride);
+                ai_real *dst = reinterpret_cast<ai_real *>(outData + i);
+                for (size_t c = 0; c < numComponents; ++c) {
+                    dst[c] = static_cast<ai_real>(src[c]);
+                }
+            } else {
+                memcpy(outData + i, data + srcIdx * stride, elemSize);
+            }
+#else
             memcpy(outData + i, data + srcIdx * stride, elemSize);
+#endif
         }
     } else { // non-indexed cases
         if (usedCount * stride > maxSize) {
@@ -1054,9 +1070,29 @@ size_t Accessor::ExtractData(T *&outData, const std::vector<unsigned int> *remap
         if (stride == elemSize && targetElemSize == elemSize) {
             memcpy(outData, data, totalSize);
         } else {
+#ifdef ASSIMP_DOUBLE_PRECISION
+            // With double precision, ai_real is 8 bytes but glTF vertex data is float32
+            // (4 bytes per component). Convert each float to ai_real individually so
+            // values are preserved rather than copying raw bytes into double fields.
+            if (elemSize == GetNumComponents() * sizeof(float) && targetElemSize == GetNumComponents() * sizeof(ai_real)) {
+                const size_t numComponents = GetNumComponents();
+                for (size_t i = 0; i < usedCount; ++i) {
+                    const float *src = reinterpret_cast<const float *>(data + i * stride);
+                    ai_real *dst = reinterpret_cast<ai_real *>(outData + i);
+                    for (size_t c = 0; c < numComponents; ++c) {
+                        dst[c] = static_cast<ai_real>(src[c]);
+                    }
+                }
+            } else {
+                for (size_t i = 0; i < usedCount; ++i) {
+                    memcpy(outData + i, data + i * stride, elemSize);
+                }
+            }
+#else
             for (size_t i = 0; i < usedCount; ++i) {
                 memcpy(outData + i, data + i * stride, elemSize);
             }
+#endif
         }
     }
     return usedCount;
